@@ -1,0 +1,372 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+Import the needed packages
+
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(stringr)
+library(plyr)
+library(varhandle)
+library(reshape)
+library(factoextra)
+
+getwd()  # Check that working directory is correct. This code uses relative paths.
+
+```
+
+# Creating Community Tables
+
+We write some functions that allow use to make a comparison table of all different communities and subcommunities. The end result is a table that has a list of the top books in a community and, next to it, the books in each of its subcommunities. We write two functions that help automate this.
+
+The tables we create are not in tidy format -- rather they are in a format for humans to read. 
+
+## Functions
+
+This first function extends a dataframe to be a given length by filling in all the extra spaces with NA. This is done so we can use the bind_cols function to place tables next to eachother.
+
+```{r}
+
+extend.dataframe <- function(df, len){
+  # Extends a dataframe to a certain length by filling in rows with NA
+  # Todo: vectorize this function for speedup
+
+  num.rows = nrow(df)
+  
+  for (i in 1:len){
+    if (i > num.rows){
+      df[i, ] = NA
+    }
+  }
+  return(df)
+}
+
+```
+
+The next function is the main code. It takes in a dataframe (rdf), the column we wish to order the results by (ordering), and whether we are breaking the entire network into communities or each community into subcommunities (subcomuns).
+
+
+```{r}
+
+comparison.table <- function(rdf, ordering, subcomuns= FALSE){
+  # rdf: A dataframe with each book, the community it is in, and other columns describing various metrics
+  # ordering: The column name of the metric we wish to order by
+  # subcomuns: Set to true if we are taking a dataframe corresponding to a community and breaking it into subcommunity. (This just changes the name of the column to match.)
+  
+  
+  
+  rdf = rdf[,c("title", "modularity_class", "eigencentrality", "Weighted.Degree", "Label")] # Reorder Columns and extract only the ones we care about.
+  
+  # Decide whether to call the modularity_class column communities or subcommunities
+  community = "Community"
+  if (subcomuns == TRUE){
+    community = "Subcommunity"}
+  
+  # Rename the columns to better reflect paper's conventions
+  rdf = rename(rdf,
+    c(modularity_class = community,
+    eigencentrality = "Eigencentrality",
+    Weighted.Degree = "Weighted Degree",
+    Label = "Goodreads Id",
+    title = "Title")
+    )
+  
+  
+  # Make sure column we are ordering by is numeric instead of a factor
+  rdf[["Eigencentrality"]] = as.numeric(as.character(rdf[["Eigencentrality"]]))
+  rdf[["Weighted Degree"]] = as.numeric(as.character(rdf[["Weighted Degree"]]))
+  
+  # Round both eigencentrality and weighted degree columns.
+  # Make sure to do this after sorting so order is maintained
+  rdf[["Eigencentrality"]] = round(rdf[["Eigencentrality"]] , digits = 3)  
+  rdf[["Weighted Degree"]] = round(rdf[["Weighted Degree"]] , digits = 2) 
+  
+  rdf = rdf[order(rdf[[ordering]], decreasing=TRUE),]
+  
+  # Get the number of books and communities
+  c = count(rdf, community)
+  num.communities = nrow(c)
+  num.books = nrow(rdf)
+  
+  dflist = list()
+  dflist = append(dflist, rdf)
+  
+  for (i in 0:(num.communities-1)){
+    df = rdf[rdf[community] == i,]
+    df = df[order(df[[ordering]], decreasing=TRUE),]
+    df = extend.dataframe(df, num.books)  # Extend dataframe so that can use bind_cols
+    df = df[,c("Title", "Eigencentrality", "Weighted Degree")]  # Drop the redundant community column
+    
+    dflist = append(dflist, df)
+  }
+  
+  df.full = bind_cols(dflist)
+
+             
+  return(df.full)
+  
+}
+```
+
+## Create the comparison tables
+
+First let's make a table the takes the reader and enjoyment networks and breaks each of them into a table of their subcommunities.
+
+```{r}
+# For the reader and enjoyment network make two tables each, one sorted by eigencentrality and the other by weighted degree.
+for (network.type in list("enjoyment", "reader")){
+  for (ordering in list("Eigencentrality", "Weighted Degree")){
+    
+    print(str_glue("Creating comparison table for {network.type}, ordered by {ordering}."))
+    
+    # Create table
+    df = read.delim2(str_glue("./raw data/full {network.type} network.csv"), sep = ",")  # Read the correct table here
+    df = comparison.table(df, ordering)
+    
+    # Save table in the processed data folder
+    path = str_glue("./processed data/comparison_table_{network.type}_by_{ordering}.xlsx")
+    write.xlsx(df, path)
+    
+    print(df)
+  }
+}
+```
+Next we will do the same thing for each of the subcommunities. To make the raw data for these we manually exported each table from Gephi by taking the entire network, filtering out those books not in the focal modularity class, and recalculating the Gephi statistics we care about (modularity class, eigencentrality, and weighted degree).
+
+```{r}
+# Create the same tables, but now for subcommunities of each community. 
+for (network.type in list("enjoyment", "reader")){
+  for (ordering in list("Eigencentrality", "Weighted Degree")){
+    
+    path = str_glue("./raw data/{network.type} subcommunities/")  # Folder with subcommunity data
+    file_names = list.files(path, pattern="*.csv") # List all .csv files in this folder
+    
+    # Create the table for each file
+    for (i in 1:length(file_names)){
+      f = file_names[[i]]
+      f = paste(path, f, sep = "")
+      print(f)
+      
+      df = read.delim2(f, sep = ",")
+      df.full = comparison.table(df, ordering, subcomuns = TRUE)
+      
+      write.xlsx(df.full, str_glue("./processed data/{network.type} subcommunities/comp_table_{network.type}_{i-1}_by_{ordering}.xlsx"))
+  
+    }
+  }
+}
+```
+There's a few last tables to create. The reader network breaks into five communities and the enjoyment network breaks into seven. It is more than possible that if we force the reader network to break into seven communities then they will be the same communities as the enjoyment network. Visa versa if we break the enjoyment network into only five communities. 
+
+We can change the community size by going back to the gephi files for our network and recalculating the modularity, but now tweaking the resolution until we get the correct number of communities.
+
+For this check we don't go through the steps of restricting the network to each subcommunity before calculating eigencentrality and weighted degree. This is because that step at most changes the ordering slightly and we don't require it for a check to see if the communities are vaguely the same.
+
+```{r}
+# Again, sort by eigencentrality and the other by weighted degree.
+
+for (ordering in list("Eigencentrality", "Weighted Degree")){
+  
+  print(str_glue("Creating comparison table for {network.type}, ordered by {ordering}."))
+  
+  # Create table
+  df = read.delim2(str_glue("./raw data/full enjoyment network 6 communities.csv"), sep = ",")  # Name of the new reader network data.
+  df = comparison.table(df, ordering)
+  
+  # Save table in the processed data folder
+  path = str_glue("./processed data/comparison_table_enjoyment_6_comns_by_{ordering}.xlsx")
+  write.xlsx(df, path)
+  
+  print(df)
+
+}
+```
+
+
+
+
+# Can Subjects predict Community?
+
+Now we ask whether a list of subjects for each book can predict the community it is in. 
+
+```{r}
+sdf = read.delim2("./raw data/subjects_reduced.csv", sep = ",", colClasses = "numeric", na.strings = "")  # read in dataframe of subjects
+print(sdf)
+```
+
+```{r}
+
+# Rename the columns to better reflect paper's conventions
+sdf = rename(sdf, c(X = "Goodreads Id")  )
+print(sdf)
+```
+
+
+```{r}
+tally(sdf)
+```
+
+
+```{r}
+
+
+# For the reader and enjoyment network 
+for (network.type in list("enjoyment", "reader")){
+    
+  print(str_glue("Creating subject table for {network.type}."))
+  
+  # Read book data table and rename columns
+  df = read.delim2(str_glue("./raw data/full {network.type} network.csv"), sep = ",")  # Read the correct table here
+  df = rename(df,
+    c(modularity_class = "Community",
+    eigencentrality = "Eigencentrality",
+    Weighted.Degree = "Weighted Degree",
+    Label = "Goodreads Id",
+    title = "Title")
+    )
+  
+  df = inner_join(sdf, df, by=c("Goodreads Id"))
+  
+  #
+  
+  # Save table in the processed data folder
+  #path = str_glue("./processed data/comparison_table_{network.type}_by_{ordering}.xlsx")
+  #write.xlsx(df, path)
+  
+  #df = lapply(df, function(x) as.numeric(as.character(x)))
+  #df = do.call(cbind, df)
+  
+  # get the sums for all the subject columns. 
+  non.sub.cols = c("Goodreads Id", "Title", "subjects", "Weighted Degree", "Eigencentrality", "clustering", "pageranks", "triangles", "Id", "Degree", "Community", "bipartite")
+  df = colSums(df[,!names(df) %in% non.sub.cols], na.rm = TRUE )
+  df[]
+  df = df[order(df[["V1"]], decreasing=TRUE),]
+
+  
+  
+  
+  # Get the number of communities so can loop through them
+  #c = count(df, "Community")
+  #num.communities = nrow(c)
+  #for (i in 0:(num.communities-1)){
+  #  cdf = df[df["Community"] == i,]
+  #  cdf = cdf[order(cdf[["Eigencentrality"]], decreasing=TRUE),]
+  #  cdf = summarise_all(cdf)
+  #  print(cdf)
+
+  }
+  
+
+  
+  
+  
+
+```
+
+
+# PCA Analysis
+
+
+
+
+We can't use the pure subject counts beacuse without normalizing the data in some way we have that popular subjects are the most influencial and thus dominate the entire analysis. 
+
+Remeber than for the 
+
+```{r}
+library(readxl)
+
+#df = read.delim2(str_glue("./raw data/relative_subject_counts_reader.csv"), sep = ",")  # Read the correct table here
+df = read_excel("./raw data/relative_subject_counts_enjoyment.xlsx")  # Read the correct table here
+# Both the above tables give the same pca analysis
+
+df = df %>% column_to_rownames(., var = "...1")  # Set label to row names. Var should equal the name of the first column.
+
+num.communities = ncol(df) - 1  # Minus 1 all counts column
+
+# Drop the all group because this makes all results the same
+df = df[ , -which(names(df) %in% c("count_all"))]  
+
+for (i in 0:(num.communities-1)){
+  colname = str_glue("count_{i}")
+  df[[colname]] = as.numeric(as.character(df[[colname]]))
+
+}
+
+# Rename the columns for interpretation
+# Names for enjoyment
+names(df)[1:num.communities] = c("Thriller", "Fantasy/Scifi", "Manga", "(Modern) Classics", "Children's", "Contemporary/Realistic", "Young Adult")
+# Names for reader
+#names(df)[1:num.communities] = c("Children's", "(Modern) Classics", "Genre Fiction", "Young Adult", "Contemporary/Realistic")
+
+
+# Remove fiction row
+#row.names.remove <- c("Fiction")
+#df = df[!(row.names(df) %in% row.names.remove), ]
+
+df["counts_all"] = NULL
+
+```
+
+
+```{r}
+subjects.pca = prcomp(df,center = TRUE, scale. = TRUE)
+summary(subjects.pca)
+fviz_eig(subjects.pca)
+
+```
+We see all components are important except the fifth. This makes sense because each of the eigenvectors should correspond to a community. If a pca could explain 100% of the variance in the number of communities that means that the communities had no overlap? So how far away from this we are corresponds to the mixing between genres.
+
+
+```{r}
+coords = get_pca_ind(subjects.pca)$coord
+coords.df = as.data.frame(coords)
+```
+
+```{r}
+get_pca(subjects.pca)$cor
+
+```
+
+
+```{r}
+
+fviz_pca_biplot(subjects.pca,
+              col.var = "contrib", # Color by contributions to the PC
+             #col.ind = "cos2", # Color by the quality of representation
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE,     # Avoid text overlapping
+             #addEllipses = TRUE,
+             label = c("quanti.sup", "var"),
+             alpha.ind = .1,
+             alpha.var = 1,
+             
+             )
+
+
+```
+
+```{r}
+fviz_pca_var(subjects.pca,
+             col.var = "contrib", # Color by contributions to the PC
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE     # Avoid text overlapping
+             )
+```
+
+
+
+```{r}
+library("corrplot")
+var <- get_pca_var(subjects.pca)
+corrplot(var$contrib, is.corr=FALSE, method="square")
+
+corrplot(var$cor, is.corr=FALSE, method="square", tl.col = 1)
+```
+
+
