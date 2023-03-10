@@ -2,6 +2,8 @@
 
 This is supplementary material for the paper "Revisiting the relevance of traditional genres: a network analysis of fiction readers' preferences."
 
+https://arxiv.org/abs/2303.05080
+
 The larger files in this repository as missing -- I'm waiting to receive more github large data storage. They should be up in about a month. In the meantime, the full supplementary materials can be found at the following link.
 
 https://drive.google.com/file/d/1aFLypkY6rscz4t-ILud-wa4YFn3lXxol/view?usp=sharing
